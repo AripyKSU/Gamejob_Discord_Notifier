@@ -1,0 +1,17 @@
+{
+  "filters": {
+    "duty": [
+      "1"
+    ],
+    "local": [
+      "I000",
+      "B000"
+    ],
+    "career_stat": [
+      "0",
+      "2"
+    ]
+  },
+  "sort_order": "3",
+  "page_size": 40
+}
