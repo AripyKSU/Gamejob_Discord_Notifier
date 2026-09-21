@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # GitHub Actions cron은 UTC 기준입니다. 매일 00:10 UTC = 09:10 KST
-    - cron: "10 0 * * *"
+    - cron: "0 15 * * *"
 
 permissions:
   contents: write
