@@ -5,13 +5,13 @@ import json
 import os
 import re
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -36,6 +36,7 @@ class Job:
     deadline: str
     registered: str
     url: str
+    image_url: str = ""
 
 
 def build_session() -> requests.Session:
@@ -46,7 +47,7 @@ def build_session() -> requests.Session:
         read=3,
         backoff_factor=1,
         status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=("POST",),
+        allowed_methods=("GET", "POST"),
     )
     session.mount("https://", HTTPAdapter(max_retries=retry))
     session.headers.update(
@@ -169,6 +170,92 @@ def fetch_all_jobs(session: requests.Session, config: dict) -> list[Job]:
     return list(unique.values())
 
 
+def _normalized(value: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]", "", value.lower())
+
+
+def _image_url(image, base_url: str) -> str:
+    if not image:
+        return ""
+    value = next(
+        (image.get(name, "").strip() for name in ("src", "data-src", "data-original") if image.get(name)),
+        "",
+    )
+    if not value or value.startswith(("data:", "blob:")):
+        return ""
+    url = urljoin(base_url, value)
+    rejected = ("spacer", "pixel", "loading.gif", "logo_none", "view-error", "gamejob_share")
+    return "" if any(word in url.lower() for word in rejected) else url
+
+
+def select_recruitment_image(html: str, base_url: str) -> str:
+    """채용 본문 iframe에서 모집내용에 해당하는 이미지를 고른다."""
+    soup = BeautifulSoup(html, "html.parser")
+    markers = ("모집요강", "모집내용", "채용내용", "담당업무", "자격요건")
+
+    for comment in soup.find_all(string=lambda value: isinstance(value, Comment)):
+        if not any(marker in _normalized(str(comment)) for marker in markers):
+            continue
+        image = comment.find_next("img")
+        url = _image_url(image, base_url)
+        if url:
+            return url
+
+    # 제작사마다 주석 이름이 다르므로, 본문에 이미지가 하나뿐인 경우도 지원한다.
+    images = [url for image in soup.find_all("img") if (url := _image_url(image, base_url))]
+    return images[0] if len(images) == 1 else ""
+
+
+def _project_terms(job: Job) -> list[str]:
+    bracketed = re.findall(r"[\[【]([^\]】]+)[\]】]", job.title)
+    terms = [_normalized(value) for value in bracketed]
+    generic = {"신입", "경력", "경력무관", "채용", "모집", "클라이언트", "개발자", "프로그래머"}
+    return [term for term in terms if len(term) >= 2 and term not in generic]
+
+
+def select_project_image(detail_soup: BeautifulSoup, job: Job) -> str:
+    """상단 갤러리에서 공고 제목의 프로젝트명과 일치하는 이미지만 고른다."""
+    terms = _project_terms(job)
+    if not terms:
+        return ""
+
+    best_score = 0
+    best_url = ""
+    for image in detail_soup.select("article.content__visual .swiper-slide img"):
+        label = _normalized(" ".join((image.get("alt", ""), image.get("title", ""))))
+        score = max((len(term) for term in terms if term in label or label in term), default=0)
+        url = _image_url(image, job.url)
+        if url and score > best_score:
+            best_score, best_url = score, url
+    return best_url
+
+
+def select_company_logo(detail_soup: BeautifulSoup, base_url: str) -> str:
+    image = detail_soup.select_one('.logo-img img[name="cologo"], .logo-img img')
+    return _image_url(image, base_url)
+
+
+def fetch_job_image(session: requests.Session, job: Job) -> str:
+    """모집 이미지 → 프로젝트 이미지 → 회사 로고 순으로 URL을 반환한다."""
+    try:
+        response = session.get(job.url, timeout=30)
+        response.raise_for_status()
+        detail_soup = BeautifulSoup(response.text, "html.parser")
+
+        iframe = detail_soup.select_one("iframe#GI_Work_Content")
+        if iframe and iframe.get("src"):
+            iframe_url = urljoin(job.url, iframe["src"])
+            iframe_response = session.get(iframe_url, timeout=30)
+            iframe_response.raise_for_status()
+            if image_url := select_recruitment_image(iframe_response.text, iframe_url):
+                return image_url
+
+        return select_project_image(detail_soup, job) or select_company_logo(detail_soup, job.url)
+    except requests.RequestException as error:
+        print(f"공고 {job.job_id} 이미지 조회 실패: {error}", file=sys.stderr)
+        return ""
+
+
 def load_state(path: Path = STATE_PATH) -> dict:
     if not path.exists():
         return {"initialized": False, "seen_job_ids": []}
@@ -224,15 +311,42 @@ def chunk_messages(jobs: list[Job], limit: int = 1900) -> list[str]:
     return messages
 
 
+def build_embed(job: Job) -> dict:
+    category = job.game_field or "게임개발(클라이언트)"
+    details = " · ".join(value for value in (job.career, job.location, job.employment_type) if value)
+    embed = {
+        "title": job.title[:256],
+        "url": job.url,
+        "description": f"**{job.company}**\n{category}",
+        "color": 0x5865F2,
+        "fields": [
+            {"name": "근무 조건", "value": details or "정보 없음", "inline": False},
+            {"name": "마감", "value": job.deadline or "미정", "inline": True},
+            {"name": "등록", "value": job.registered or "정보 없음", "inline": True},
+        ],
+    }
+    if job.image_url:
+        embed["image"] = {"url": job.image_url}
+    return embed
+
+
+def chunk_embeds(jobs: list[Job], limit: int = 10) -> list[list[dict]]:
+    return [[build_embed(job) for job in jobs[index:index + limit]] for index in range(0, len(jobs), limit)]
+
+
 def send_discord(webhook_url: str, jobs: list[Job]) -> None:
-    for message in chunk_messages(jobs):
-        response = requests.post(webhook_url, json={"content": message}, timeout=30)
+    for index, embeds in enumerate(chunk_embeds(jobs)):
+        payload = {"embeds": embeds}
+        if index == 0:
+            payload["content"] = f"🎮 **게임잡 신규 공고 {len(jobs)}건**"
+        response = requests.post(webhook_url, json=payload, timeout=30)
         response.raise_for_status()
 
 
 def run(dry_run: bool = False) -> int:
     config_path = Path(os.environ.get("GAMEJOB_CONFIG_PATH", DEFAULT_CONFIG_PATH))
-    jobs = fetch_all_jobs(build_session(), load_config(config_path))
+    session = build_session()
+    jobs = fetch_all_jobs(session, load_config(config_path))
     print(f"조건에 맞는 공고 {len(jobs)}건을 찾았습니다.")
 
     if dry_run:
@@ -254,6 +368,8 @@ def run(dry_run: bool = False) -> int:
         save_state(seen_ids | current_ids)
         print("새 공고가 없습니다.")
         return 0
+
+    new_jobs = [replace(job, image_url=fetch_job_image(session, job)) for job in new_jobs]
 
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     if not webhook_url:
