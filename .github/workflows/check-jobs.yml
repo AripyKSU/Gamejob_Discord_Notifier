@@ -3,8 +3,8 @@ name: Check GameJob
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions cron은 UTC 기준입니다. 매일 00:10 UTC = 09:10 KST
-    - cron: "0 15 * * *"
+    # GitHub Actions cron은 UTC 기준입니다. 매일 14:10 UTC = 23:10 KST
+    - cron: "10 14 * * *"
 
 permissions:
   contents: write
