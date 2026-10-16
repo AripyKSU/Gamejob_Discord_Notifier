@@ -122,3 +122,25 @@ GAMEJOB_CONFIG_PATH=config.test.json python main.py --dry-run
 ```
 
 게임잡이 HTML 구조나 내부 검색 코드를 변경하면 수집기가 실패할 수 있습니다. 이 경우 GitHub Actions 실행 기록에서 오류를 확인하고 선택자 또는 필터 코드를 갱신해야 합니다.
+
+## 잡코리아 알림
+
+`Check JobKorea`는 매일 한국시간 23:10에 별도로 실행됩니다. GitHub 예약 실행은 지연될 수 있습니다.
+게임개발자 태그 MMORPG·클라이언트, 서울·경기, 신입·1~3년·경력무관을 조회합니다.
+등록일순으로 모든 페이지를 수집하며, QA·운영 등 검색 결과에 포함된 공고를 임의로 제외하지 않습니다.
+조건은 `jobkorea_config.json`, 수집 코드는 `jobkorea.py`에 있습니다.
+
+1. 저장소 **Settings → Secrets and variables → Actions → New repository secret**으로 이동합니다.
+2. 이름을 `JOBKOREA_DISCORD_WEBHOOK_URL`로 입력하고 새 디스코드 채널의 웹훅 URL을 값으로 저장합니다.
+3. **Actions → Check JobKorea → Run workflow**로 첫 실행을 합니다.
+
+첫 실행은 기존 공고를 `seen_jobkorea_jobs.json`에 저장하고 알림을 보내지 않습니다.
+이후 신규 ID만 알림을 보내며, 전송에 성공한 공고부터 상태를 저장합니다.
+전송 도중 실패해도 저장된 상태는 Actions 마지막 단계에서 커밋됩니다.
+게임잡의 `DISCORD_WEBHOOK_URL` 및 `seen_jobs.json`은 별도로 유지합니다.
+두 workflow는 상태 파일을 같은 브랜치에 저장하므로 동시 실행을 직렬화합니다.
+잡코리아 알림은 제목·회사·직무 키워드·근무 조건·등록·마감·링크를 표시합니다.
+이미지 수집은 포함하지 않습니다.
+
+전송·상태 저장 없이 확인하려면 `python jobkorea.py --dry-run`을 실행합니다.
+목록 구조 변경이나 불완전한 페이지 응답은 오류로 처리하고 수집 결과를 상태에 반영하지 않습니다.

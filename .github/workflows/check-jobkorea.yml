@@ -1,0 +1,55 @@
+name: Check JobKorea
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub Actions cron은 UTC 기준입니다. 매일 14:10 UTC = 23:10 KST
+    - cron: "10 14 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gamejob-notifier
+  cancel-in-progress: false
+
+jobs:
+  check-jobs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Check new JobKorea jobs
+        env:
+          JOBKOREA_DISCORD_WEBHOOK_URL: ${{ secrets.JOBKOREA_DISCORD_WEBHOOK_URL }}
+        run: python jobkorea.py
+
+      - name: Save seen job IDs
+        if: ${{ always() }}
+        run: |
+          git add --intent-to-add seen_jobkorea_jobs.json 2>/dev/null || true
+          if git diff --quiet -- seen_jobkorea_jobs.json; then
+            echo "No state changes to commit."
+            exit 0
+          fi
+
+          git config user.name "gamejob-notifier[bot]"
+          git config user.email "gamejob-notifier[bot]@users.noreply.github.com"
+          git add seen_jobkorea_jobs.json
+          git commit -m "chore: update seen JobKorea IDs"
+          git push
