@@ -22,6 +22,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Sync latest main before checking jobs
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -50,4 +55,17 @@ jobs:
           git config user.email "gamejob-notifier[bot]@users.noreply.github.com"
           git add seen_jobs.json
           git commit -m "chore: update seen GameJob IDs"
-          git push
+          # Another workflow may have pushed after checkout.
+          # Integrate its commit before pushing our state update.
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main
+            if git push origin HEAD:main; then
+              echo "Saved GameJob IDs successfully."
+              exit 0
+            fi
+            echo "Push rejected (attempt ${attempt}/5); retrying after fetching latest main."
+            sleep 2
+          done
+          echo "Could not save GameJob IDs after 5 push attempts." >&2
+          exit 1
